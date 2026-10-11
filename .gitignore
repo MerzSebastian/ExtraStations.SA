@@ -1,0 +1,25 @@
+# build output
+out/
+build/
+build_tmp/
+dist/
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.asi
+*.zip
+
+# logs and dumps
+*.log
+*.log.old
+*.dmp
+
+# local test material (stations, listening files) and scratch
+*.ogg
+*.mp3
+*.wav
+.vs/
+.vscode/
+__pycache__/
+*.pyc

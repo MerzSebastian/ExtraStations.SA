@@ -1,0 +1,94 @@
+name: build
+
+# Every push and pull request: run the unit tests and build the plugin.
+# A tag like v1.0.0: the same, and then a GitHub release with the zip is made.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests
+        shell: pwsh
+        run: ./tools/test.ps1
+
+      - name: Build ExtraStations.SA.asi (32-bit)
+        shell: cmd
+        run: build.bat
+
+      - name: Check that the plugin is a 32-bit DLL
+        shell: pwsh
+        run: |
+          $bytes = [IO.File]::ReadAllBytes('out/ExtraStations.SA.asi')
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          if ($machine -ne 0x14c) { throw ('ExtraStations.SA.asi is not x86 (machine 0x{0:x})' -f $machine) }
+
+      - name: Read the version from the source
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path src/ExtraStations.cpp -Pattern 'kVersion = "([^"]+)"').Matches[0].Groups[1].Value
+          "version=$version" >> $env:GITHUB_OUTPUT
+          if ('${{ github.ref_type }}' -eq 'tag' -and '${{ github.ref_name }}' -ne "v$version") {
+            throw "The tag ${{ github.ref_name }} does not match kVersion $version in src/ExtraStations.cpp"
+          }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = 'ExtraStations.SA-${{ steps.version.outputs.version }}'
+          $stage = "dist/package/$name"
+          New-Item -ItemType Directory -Force -Path "$stage/scripts", "$stage/docs", "$stage/tools" | Out-Null
+          Copy-Item out/ExtraStations.SA.asi, out/ExtraStations.SA.ini "$stage/scripts"
+          # the ready-made, still empty station folder (MyStation with songs, idents, ads and talk)
+          $stations = "$stage/scripts/ExtraStations.SA"
+          foreach ($d in 'songs', 'idents', 'ads', 'talk') { New-Item -ItemType Directory -Force -Path "$stations/MyStation/$d" | Out-Null }
+          Copy-Item data/ExtraStations.SA/README.txt $stations
+          Copy-Item README.md, LICENSE, CHANGELOG.md $stage
+          Copy-Item docs/SAMPLE_RATES.md, docs/DEBUGGING.md, docs/FUTURE_FEATURES.md "$stage/docs"
+          Copy-Item tools/convert-sample-rate.ps1 "$stage/tools"
+          # ZipFile keeps empty folders (Compress-Archive may not)
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path $stage).Path, (Join-Path (Get-Location).Path "dist/$name.zip"), [IO.Compression.CompressionLevel]::Optimal, $false)
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Out-File -Encoding ascii dist/SHA256SUMS.txt
+          Get-ChildItem -Recurse $stage -File | ForEach-Object { $_.FullName.Substring((Resolve-Path $stage).Path.Length + 1) }
+          Get-Content dist/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ExtraStations.SA
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+
+  release:
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ExtraStations.SA
+          path: out
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
+          body: |
+            Unpack the zip into your GTA San Andreas folder (v1.0 US), add a station folder and edit `scripts/ExtraStations.SA.ini`.
+            An ASI loader is needed. See the README inside the zip. Verify the download with `SHA256SUMS.txt`.
+            The source code of this version is this repository at this tag.
